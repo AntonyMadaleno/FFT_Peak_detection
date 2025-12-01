@@ -287,7 +287,7 @@ def _choose_k_by_elbow_on_f(f_vals):
     den = np.sqrt((y2 - y1)**2 + (x2 - x1)**2)
     den = max(den, 1e-12)
     d = num / den
-    return int(xs[np.argmax(d)])
+    return int(xs[np.argmax(d)] - 1)
 
 def _component_variances_from_gm(gm, covariance_type):
     """Retourne un array de variances (1D) par composante pour un GMM 1D."""
@@ -306,20 +306,55 @@ def _component_variances_from_gm(gm, covariance_type):
     return covs
 
 def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, max_k=None,
-                                         covariance_type='full', random_state=0):
+                                         covariance_type='full', random_state=0, rng_seed=None,
+                                         freq_priority=0.0, freq_cutoff=0.1, freq_exponent=2.0):
     """
     Détecte pics et renvoie :
       sel         : liste de (r_index, profile[r_index]) (au plus max_peaks) - sélection finale par min_distance
       components  : liste de dicts pour chaque composante détectée contenant :
-                    { 'mean': float, 'std': float, 'weight': float, 'center_idx': int, 'pdf': np.array }
-      modeled     : np.array (mixture reconstruite, mise à l'échelle pour conserver l'aire du profile)
+                    { 'mean': float, 'std': float, 'weight': float, 'center_idx': int, 'pdf': np.array,
+                      'dirac_added': bool (optionnel), 'dirac_amplitude': float (optionnel), 'is_dirac': bool (optionnel) }
+      modeled     : np.array (mixture reconstruite, mise à l'échelle pour conserver l'aire du profile),
+                    auquel on ajoute des pics de Dirac détectés directement sur `profile`.
       k_best      : nombre de composantes choisi
       f_vals, Ks  : (optionnel) valeurs f(k) testées et Ks correspondants (utile pour debug)
+
+    Règles de détection des Dirac :
+      1) critère principal : profile[idx] > mean + 4.0 * std
+      2) si aucun indice retenu par (1), fallback sur discontinuités de la dérivée :
+         - d = np.gradient(profile) ; prendre indices où |d| > mean(|d|) + 4.0 * std(|d|)
+         - ces indices sont considérés comme positions de discontinuité (candidates)
+      - On n'ajoute un Dirac que si aucune composante GMM n'a son centre arrondi à cet indice.
+      - Le nombre de Dirac ajoutés est limité à int(max_k/2).
+    Priorisation des basses fréquences:
+      - freq_priority (float, default 0.0) : force de priorisation (0 = désactivé).
+      - freq_cutoff (float in (0,0.5], default 0.1) : fréquence normalisée de coupure (fraction de Nyquist).
+      - freq_exponent (float > 0, default 2.0) : contrôle la pente de la transition.
     """
+    import numpy as np
+
     profile = np.asarray(profile, dtype=float)
     N = profile.size
     if N == 0:
         return [], [], np.zeros(0), 0, [], []
+
+    # --- sécurité paramètres fréquence ---
+    try:
+        freq_cutoff = float(freq_cutoff)
+    except Exception:
+        freq_cutoff = 0.1
+    if freq_cutoff <= 0.0 or freq_cutoff > 0.5:
+        freq_cutoff = 0.1
+    try:
+        freq_priority = float(freq_priority)
+    except Exception:
+        freq_priority = 0.0
+    try:
+        freq_exponent = float(freq_exponent)
+    except Exception:
+        freq_exponent = 2.0
+    if freq_exponent <= 0.0:
+        freq_exponent = 2.0
 
     # poids non négatifs pour le fit
     prof_min = profile.min()
@@ -336,6 +371,19 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
 
     x = np.arange(N).reshape(-1, 1)
 
+    # Préparer grille fréquentielle (pour rfft)
+    freqs = np.fft.rfftfreq(N, d=1.0)  # shape M = N//2 + 1
+
+    # construire poids fréquentiels (prioriser basses fréquences) :
+    if freq_priority == 0.0:
+        weight_freq = np.ones_like(freqs)
+    else:
+        denom = 1.0 + (freqs / freq_cutoff) ** freq_exponent
+        weight_freq = 1.0 + float(freq_priority) * (1.0 / denom)
+    sum_weight_freq = float(np.sum(weight_freq))
+    if sum_weight_freq <= 0:
+        sum_weight_freq = 1.0
+
     # calculer f(k) pour k=1..max_k
     f_vals = []
     Ks = list(range(1, max_k + 1))
@@ -343,25 +391,39 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
         try:
             gm = _fit_gmm_with_weights(x, weights, n_components=k,
                                        covariance_type=covariance_type,
-                                       random_state=random_state, rng_seed=random_state)
+                                       random_state=random_state, rng_seed=(rng_seed if rng_seed is not None else random_state))
             log_pdf = gm.score_samples(x)
             pdf = np.exp(log_pdf)
             sum_pdf = pdf.sum()
             sum_profile = profile.sum()
             if sum_pdf <= 0:
-                modeled = np.zeros_like(profile)
+                modeled_k = np.zeros_like(profile)
             else:
-                modeled = (sum_profile / sum_pdf) * pdf
+                modeled_k = (sum_profile / sum_pdf) * pdf
 
-            f_k = dist_Jeffreys(profile, modeled)
-            # p = 16
-            # f_k = float( np.sum(np.abs(profile**p - modeled**p)**(1/p)) )
-            if not np.isfinite(f_k):
-                f_k = 1e12
+            # si on ne priorise pas les basses fréquences, on conserve dist_Jeffreys d'origine
+            if freq_priority == 0.0:
+                f_k = dist_Jeffreys(profile, modeled_k)
+                if not np.isfinite(f_k):
+                    f_k = 1e12
+            else:
+                # distance spectrale pondérée entre profile et modeled_k
+                Pf = np.fft.rfft(profile)
+                Mf = np.fft.rfft(modeled_k)
+                magP = np.abs(Pf)
+                magM = np.abs(Mf)
+                diff2 = (magP - magM) ** 2
+                weighted_diff = weight_freq * diff2
+                spectral_dist = float(np.sum(weighted_diff) / sum_weight_freq)
+                f_k = spectral_dist
+                if not np.isfinite(f_k):
+                    f_k = 1e12
+
         except Exception:
             f_k = 1e12
         f_vals.append(f_k)
 
+    # choisir k_best selon elbow sur f_vals puis limiter par max_peaks
     k_best = _choose_k_by_elbow_on_f(np.array(f_vals))
     k_best = min(k_best, max_peaks)
 
@@ -369,7 +431,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
     try:
         gm = _fit_gmm_with_weights(x, weights, n_components=k_best,
                                    covariance_type=covariance_type,
-                                   random_state=random_state, rng_seed=random_state)
+                                   random_state=random_state, rng_seed=(rng_seed if rng_seed is not None else random_state))
     except Exception:
         # échec du fit final : retomber proprement
         return [], [], np.zeros(N), 0, f_vals, Ks
@@ -382,30 +444,32 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
     # construire pdf par composante (non-scaled) : weight_i * N(x|mean,std)
     x1d = np.arange(N)
     comps = []
-    # calcul anti-débordement pour normale 1D
-    norm_consts = 1.0 / np.sqrt(2.0 * np.pi * variances)
-    for i, (m, s, w, normc) in enumerate(zip(means, stds, mix_weights, norm_consts)):
-        # densité non-scalée (mixture density component)
-        exponent = -0.5 * ((x1d - m) / s) ** 2
+    eps_var = 1e-12
+    safe_variances = np.maximum(variances, eps_var)
+    norm_consts = 1.0 / np.sqrt(2.0 * np.pi * safe_variances)
+    for i, (m, s, w, normc, var) in enumerate(zip(means, stds, mix_weights, norm_consts, safe_variances)):
+        exponent = -0.5 * ((x1d - m) / (s if s > 0 else np.sqrt(var))) ** 2
         comp_pdf = w * normc * np.exp(exponent)   # shape (N,)
         comps.append({'mean': float(m),
-                      'std': float(s),
+                      'std': float(np.sqrt(var)),
                       'weight': float(w),
                       'center_idx': int(np.clip(int(round(m)), 0, N-1)),
                       'pdf_raw': comp_pdf})  # avant scaling
+
     # mixture raw
-    mixture_raw = np.sum([c['pdf_raw'] for c in comps], axis=0)
+    mixture_raw = np.sum([c['pdf_raw'] for c in comps], axis=0) if comps else np.zeros(N)
     sum_profile = profile.sum()
     sum_mixture_raw = mixture_raw.sum()
     if sum_mixture_raw <= 0:
         scale = 0.0
     else:
         scale = sum_profile / sum_mixture_raw
-    # appliquer scaling identique aux composants
     for c in comps:
         c['pdf'] = scale * c['pdf_raw']
-        # supprimer pdf_raw si on veut alléger (laisser pour debug)
-        # del c['pdf_raw']
+        c['dirac_added'] = False
+        c['dirac_amplitude'] = 0.0
+        c['is_dirac'] = False
+
     modeled = scale * mixture_raw
 
     # tri des composantes par poids de mélange décroissant (pour sélection greedy)
@@ -416,7 +480,6 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
     for c in comps_sorted:
         r = c['center_idx']
         val = float(c['pdf'][r])
-
         too_close = False
         for (sr, sval) in sel:
             if abs(sr - r) <= max(1, min_distance):
@@ -427,4 +490,115 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
         if len(sel) >= max_peaks:
             break
 
+    # --- Détection des Dirac sur le profil (critère statistique + fallback dérivée) ---
+    profile_mean = float(np.mean(profile)) if profile.size > 0 else 0.0
+    profile_std = float(np.std(profile)) if profile.size > 0 else 0.0
+    # seuil principal : mean + 4.0 * sigma
+    magnitude_threshold = profile_mean + 4.0 * profile_std
+
+    dirac_limit = max(0, int(max_k // 2))
+    dirac_added_count = 0
+
+    # indices déjà occupés par une composante GMM (centres arrondis)
+    gmm_centers = {c['center_idx'] for c in comps}
+
+    def respects_min_distance(idx, selection, mind):
+        for (sr, sval) in selection:
+            if abs(sr - idx) <= max(1, mind):
+                return False
+        return True
+
+    # --- première passe : indices où profile[idx] > magnitude_threshold ---
+    candidate_indices = [i for i, val in enumerate(profile) if val > magnitude_threshold]
+    candidate_indices = sorted(candidate_indices, key=lambda ii: profile[ii], reverse=True)
+
+    # --- si aucun candidat trouvé, fallback sur discontinuités de la dérivée ---
+    if len(candidate_indices) == 0:
+        # dérivée discrète (gradient, même longueur que profile)
+        d = np.gradient(profile)
+        absd = np.abs(d)
+        mean_absd = float(np.mean(absd))
+        std_absd = float(np.std(absd))
+        deriv_threshold = mean_absd + 4.0 * std_absd
+        # indices où la dérivée a une discontinuité (|d| > seuil)
+        candidate_indices = [i for i, val in enumerate(absd) if val > deriv_threshold]
+        # trier par amplitude de la discontinuité (décroissant)
+        candidate_indices = sorted(candidate_indices, key=lambda ii: absd[ii], reverse=True)
+
+    # parcourir les candidats et ajouter au besoin (en vérifiant centre GMM et min_distance)
+    for r in candidate_indices:
+        if dirac_added_count >= dirac_limit:
+            break
+        if r in gmm_centers:
+            # on ne veut pas ajouter si un composant GMM est déjà centré ici
+            continue
+
+        dirac_amp = float(profile[r])
+
+        # si amplitude trop faible (?) — on peut garder car threshold l'a filtrée
+        # vérifier min_distance vs sélection actuelle
+        if not respects_min_distance(r, sel, min_distance):
+            # si sel plein et le dirac est plus grand que le plus petit élément, essayer de remplacer
+            if len(sel) >= max_peaks:
+                min_idx = None
+                min_val = float('inf')
+                for i, (_sr, _sval) in enumerate(sel):
+                    if _sval < min_val:
+                        min_val = _sval
+                        min_idx = i
+                if min_idx is not None and dirac_amp > min_val:
+                    temp_sel = sel[:min_idx] + sel[min_idx+1:]
+                    if respects_min_distance(r, temp_sel, min_distance):
+                        sel[min_idx] = (r, float(dirac_amp))
+                    else:
+                        continue
+                else:
+                    continue
+            else:
+                continue
+        else:
+            if len(sel) < max_peaks:
+                sel.append((r, float(dirac_amp)))
+            else:
+                min_idx = None
+                min_val = float('inf')
+                for i, (_sr, _sval) in enumerate(sel):
+                    if _sval < min_val:
+                        min_val = _sval
+                        min_idx = i
+                if min_idx is not None and dirac_amp > min_val:
+                    temp_sel = sel[:min_idx] + sel[min_idx+1:]
+                    if respects_min_distance(r, temp_sel, min_distance):
+                        sel[min_idx] = (r, float(dirac_amp))
+                    else:
+                        continue
+
+        # ajout au modeled
+        modeled[r] += dirac_amp
+
+        # créer pdf du Dirac (zéros sauf à r)
+        dirac_pdf = np.zeros(N, dtype=float)
+        dirac_pdf[r] = dirac_amp
+
+        # ajouter une entrée distincte dans comps représentant le Dirac (std = 0.0)
+        dirac_comp = {
+            'mean': float(r),
+            'std': 0.0,
+            'weight': 0.0,
+            'center_idx': int(r),
+            'pdf': dirac_pdf,
+            'dirac_added': True,
+            'dirac_amplitude': float(dirac_amp),
+            'is_dirac': True
+        }
+        comps.append(dirac_comp)
+        gmm_centers.add(r)
+        dirac_added_count += 1
+
+    # trier sel par magnitude décroissante et garder au plus max_peaks
+    sel = sorted(sel, key=lambda t: t[1], reverse=True)[:max_peaks]
+
     return sel, comps, modeled, k_best, f_vals, Ks
+
+
+

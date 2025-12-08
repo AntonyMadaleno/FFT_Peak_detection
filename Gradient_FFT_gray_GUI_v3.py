@@ -186,12 +186,12 @@ class FFTFilterGUI(tk.Tk):
         spin_min.grid(row=0, column=7, padx=4)
 
         ttk.Label(frame, text='max_gmm:').grid(row=0, column=8, padx=4)
-        self.max_gmm = tk.IntVar(value=8)
+        self.max_gmm = tk.IntVar(value=4)
         spin_min = tk.Spinbox(frame, from_=2, to=32, textvariable=self.max_gmm, width=6)
         spin_min.grid(row=0, column=9, padx=4)
 
         ttk.Label(frame, text='gamma:').grid(row=0, column=10, padx=4)
-        self.gamma = tk.DoubleVar(value=2.2)
+        self.gamma = tk.DoubleVar(value=1.0)
         spin_min = tk.Entry(frame, textvariable=self.gamma, width=6)
         spin_min.grid(row=0, column=11, padx=4)
 
@@ -241,21 +241,21 @@ class FFTFilterGUI(tk.Tk):
         self.canvas_fft = FigureCanvasTkAgg(self.fig_fft, master=left)
         self.canvas_fft.get_tk_widget().pack(fill='both', expand=True)
 
-        self.fig_profile_fft, self.ax_profile_fft = plt.subplots(figsize=(4,3.5))
-        self.canvas_profile_fft = FigureCanvasTkAgg(self.fig_profile_fft, master=center)
-        self.canvas_profile_fft.get_tk_widget().pack(fill='both', expand=True)
-
-        self.fig_profile_grad, self.ax_profile_grad = plt.subplots(figsize=(4,3.5))
-        self.canvas_profile_grad = FigureCanvasTkAgg(self.fig_profile_grad, master=center)
-        self.canvas_profile_grad.get_tk_widget().pack(fill='both', expand=True)
-
         self.fig_kernel, self.ax_kernel = plt.subplots(figsize=(4,3.5))
-        self.canvas_kernel = FigureCanvasTkAgg(self.fig_kernel, master=right)
+        self.canvas_kernel = FigureCanvasTkAgg(self.fig_kernel, master=center)
         self.canvas_kernel.get_tk_widget().pack(fill='both', expand=True)
 
         self.fig_grad, self.ax_grad = plt.subplots(figsize=(4,3.5))
-        self.canvas_grad = FigureCanvasTkAgg(self.fig_grad, master=right)
+        self.canvas_grad = FigureCanvasTkAgg(self.fig_grad, master=center)
         self.canvas_grad.get_tk_widget().pack(fill='both', expand=True)
+
+        self.fig_profile_fft, self.ax_profile_fft = plt.subplots(figsize=(4,6))
+        self.canvas_profile_fft = FigureCanvasTkAgg(self.fig_profile_fft, master=right)
+        self.canvas_profile_fft.get_tk_widget().pack(fill='both', expand=True)
+
+        self.fig_profile_grad, self.ax_profile_grad = plt.subplots(figsize=(4,6))
+        self.canvas_profile_grad = FigureCanvasTkAgg(self.fig_profile_grad, master=right)
+        self.canvas_profile_grad.get_tk_widget().pack(fill='both', expand=True)
 
     def _on_load_image(self):
         path = filedialog.askopenfilename(filetypes=[('Images','*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp;*.gif'), ('All','*.*')])
@@ -352,19 +352,19 @@ class FFTFilterGUI(tk.Tk):
         self.ax_fft.axis('off')
 
         self.ax_profile_fft.clear()
-        self.ax_profile_fft.plot(self.radii[1:], self.profile[1:], lw= 2,  alpha= 0.5)
+        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / self.radii[1:]), self.profile[1:], lw= 2,  alpha= 0.5)
         self.ax_profile_fft.set_title('FFT Radial profile')
 
-        x = np.arange(len(self.gmm_info['modeled']))
-        self.ax_profile_fft.plot(x, self.gmm_info['modeled'], label=f'GMM mixture', lw= 2, alpha = 0.5)
+        x = np.arange(start = 1, stop = len(self.gmm_info['modeled']))
+        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), self.gmm_info['modeled'][1:], label=f'GMM mixture', lw= 2, alpha = 0.5)
 
         for num, c in enumerate(self.gmm_info['components']):
-            self.ax_profile_fft.plot(x, c['pdf'], lw= 1, linestyle='--', alpha= 0.5, label = f"composante {num}")
+            self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), c['pdf'][1:], lw= 1, linestyle='--', alpha= 0.5, label = f"composante {num}")
         
         # marques des centres sélectionnés
         for (r, v) in self.gmm_info['selected']:
-            self.ax_profile_fft.axvline(r, color='k', linestyle=':', alpha=0.6)
-            self.ax_profile_fft.scatter([r], [v], c='k')
+            self.ax_profile_fft.axvline(np.log2(np.min([width, height]) / r), color='k', linestyle=':', alpha=0.6)
+            self.ax_profile_fft.scatter([np.log2(np.min([width, height]) / r)], [v], c='k')
 
         for i,p in enumerate(self.peaks_info, start=1):
             c = p.get('c', None)
@@ -373,11 +373,11 @@ class FFTFilterGUI(tk.Tk):
                 continue
             self.ax_fft.scatter([c], [r], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
             radius = int(np.sqrt((c - height / 2)**2 + (r - width / 2)**2))
-            self.ax_profile_fft.scatter(radius, self.profile[radius], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
+            self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
             if highlight_idx is not None and i-1 == highlight_idx:
                 self.ax_fft.scatter([c], [r], marker='x', color='cyan', s=50)
                 radius = int(np.sqrt((c - height / 2)**2 + (r - width / 2)**2))
-                self.ax_profile_fft.scatter(radius, self.profile[radius], color = "cyan", marker = 'x', s=50)
+                self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius], color = "cyan", marker = 'x', s=50)
 
                 self.ax_profile_grad.clear()
                 angles, magnitudes = direction_profile(self.fft_mag, distance= radius)

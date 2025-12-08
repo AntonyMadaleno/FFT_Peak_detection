@@ -2,6 +2,7 @@ import math
 import numpy as np
 from sklearn.mixture import GaussianMixture
 from xp_distances import dist_Jeffreys
+import matplotlib.pyplot as plt
 
 # ---------------- radial profile utilities ----------------
 
@@ -36,6 +37,22 @@ def radial_distance_profile(mag, center=None, max_radius=None):
     valid = counts > 0
     mean_profile[valid] = sums[valid] # / counts[valid]
     radii = np.arange(len(mean_profile))
+
+    """# Création d'une figure et d'un axe
+    fig, ax = plt.subplots(figsize=(6, 3))
+
+    # Tracer sur l'axe
+    ax.plot(radii, mean_profile / (ny * nx), lw=1.0)
+
+    # Nom des axes
+    ax.set_xlabel("Frequency")
+    ax.set_ylabel("Normalized magnitude")
+
+    # Affichage de la figure
+    plt.show()
+
+    # Si besoin, fermer explicitement la figure
+    plt.close(fig)"""
 
     return radii, mean_profile, counts
 

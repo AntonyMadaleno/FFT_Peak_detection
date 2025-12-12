@@ -386,7 +386,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
         max_k = min(max_peaks, max(1, N // 2, 6))
     max_k = max(1, int(max_k))
 
-    x = np.arange(N).reshape(-1, 1)
+    x = np.arange(start = min_distance, stop = N + min_distance).reshape(-1, 1)
 
     # Préparer grille fréquentielle (pour rfft)
     freqs = np.fft.rfftfreq(N, d=1.0)  # shape M = N//2 + 1
@@ -421,6 +421,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
             # si on ne priorise pas les basses fréquences, on conserve dist_Jeffreys d'origine
             if freq_priority == 0.0:
                 f_k = dist_Jeffreys(profile, modeled_k)
+                # print(f"{k} : {f_k}\n")
                 if not np.isfinite(f_k):
                     f_k = 1e12
             else:

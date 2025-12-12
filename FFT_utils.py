@@ -1,5 +1,7 @@
 import math
 import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # ---------------- FFT / detection / kernels ----------------
 
@@ -60,7 +62,7 @@ def mirror_coord(coord, shape):
 def directional_gaussian_derivative_kernel(sigma, angle_rad, truncate=3.0):
     if sigma <= 0:
         sigma = 0.5
-    radius = int(math.ceil(truncate * sigma))
+    radius = int(truncate * sigma)
     ys = np.arange(-radius, radius+1)
     xs = np.arange(-radius, radius+1)
     yy, xx = np.meshgrid(ys, xs, indexing='ij')
@@ -73,6 +75,25 @@ def directional_gaussian_derivative_kernel(sigma, angle_rad, truncate=3.0):
     s = np.sum(np.abs(dgdxp))
     if s != 0.0:
         dgdxp = dgdxp / s
+
+    """plt.figure(figsize=(6,4))
+    ax = plt.gca()
+
+    im = ax.imshow(dgdxp)
+
+    # Création d'un axe au-dessus
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("top", size="5%", pad=0.5)
+
+    # Colorbar au-dessus
+    cb = plt.colorbar(im, cax=cax, orientation="horizontal")
+
+    # Inverser la direction vers le haut (optionnel)
+    cax.xaxis.set_ticks_position("top")
+    cax.xaxis.set_label_position("top")
+
+    plt.show()"""
+
     return dgdxp
 
 

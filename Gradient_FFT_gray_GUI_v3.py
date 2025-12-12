@@ -12,14 +12,78 @@ import threading
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from matplotlib import gridspec
 import matplotlib
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
+from PIL import Image
+import matplotlib.cm as cm
 
 from FFT_utils import *
 from Radial_utils import *
+
+def _normalize_to_0_1(arr):
+    arr = np.array(arr, dtype=np.float32)
+    mn, mx = arr.min(), arr.max()
+    if mx > mn:
+        return (arr - mn) / (mx - mn)
+    # si tableau constant, retourner zeros (évite division par 0)
+    return np.zeros_like(arr, dtype=np.float32)
+
+def save_hue_value_and_rgb(hue, value, rgb_map):
+    """
+    hue : 2D array (attendu dans l'intervalle [0,1] idéalement)
+    value: 2D array (attendu dans l'intervalle [0,1] idéalement)
+    rgb_map: 3D array HxWx3 avec composantes en floats [0,1] (résultat de hsv_to_rgb)
+    """
+
+    # --- Préparer hue (colormap 'hsv' — équivalent pratique à 'hue') ---
+    hue_norm = _normalize_to_0_1(hue)  # normalise sur [0,1]
+    cmap_hue = cm.get_cmap('hsv')      # 'hsv' pour représenter la teinte cyclique
+    rgba_hue = cmap_hue(hue_norm)      # -> NxMx4 floats [0,1]
+    rgb_hue = (rgba_hue[..., :3] * 255).astype(np.uint8)
+
+    # --- Préparer value (colormap 'viridis') ---
+    value_norm = _normalize_to_0_1(value)
+    cmap_val = cm.get_cmap('viridis')
+    rgba_val = cmap_val(value_norm)
+    rgb_value = (rgba_val[..., :3] * 255).astype(np.uint8)
+
+    # --- Préparer rgb_map (déjà en RGB) ---
+    rgb_map_arr = np.clip(rgb_map, 0.0, 1.0)  # s'assure que les valeurs sont dans [0,1]
+    rgb_map_uint8 = (rgb_map_arr * 255).astype(np.uint8)
+
+    # --- Dialogs de sauvegarde (trois fichiers séparés) ---
+    # 1) hue
+    save_hue_path = filedialog.asksaveasfilename(
+        title="Sauvegarder 'hue' (colormap hsv)",
+        defaultextension=".png",
+        filetypes=[("PNG image","*.png")]
+    )
+    if save_hue_path:
+        Image.fromarray(rgb_hue).save(save_hue_path)
+
+    # 2) value
+    save_value_path = filedialog.asksaveasfilename(
+        title="Sauvegarder 'value' (colormap viridis)",
+        defaultextension=".png",
+        filetypes=[("PNG image","*.png")]
+    )
+    if save_value_path:
+        Image.fromarray(rgb_value).save(save_value_path)
+
+    # 3) rgb_map (résultat hsv_to_rgb)
+    save_rgb_path = filedialog.asksaveasfilename(
+        title="Sauvegarder 'rgb_map' (couleur telle que convertie)",
+        defaultextension=".png",
+        filetypes=[("PNG image","*.png")]
+    )
+    if save_rgb_path:
+        Image.fromarray(rgb_map_uint8).save(save_rgb_path)
+
+    messagebox.showinfo("Sauvegarde", "Opération terminée (si fichiers choisis).")
 
 # ---------------- Backend selection (NumPy / CuPy) ----------------
 
@@ -126,6 +190,81 @@ def compute_ellipse_hsv_map(gx, gy, gamma = 2.2):
     hsv_map[:, :, 0] = hue
     hsv_map[:, :, 1] = 1.0  # Full saturation
     hsv_map[:, :, 2] = value
+
+    """
+    # Bins
+    angle_bins = np.arange(0, 360+15, 30)
+    value_bins = np.arange(0, 1.01, 1.0/16.0)
+
+    fig = plt.figure(figsize=(10,5))
+    gs = gridspec.GridSpec(nrows=4, ncols=4,
+                        width_ratios=[1,1,1,0.35],
+                        height_ratios=[0.8, 4, 4, 0.8],
+                        hspace=0.05, wspace=0.05)
+
+    # --- axe principal (créé via GridSpec pour contrôle) ---
+    ax_main = fig.add_subplot(gs[1:3, :3])
+
+    # tracer le 2D
+    h2 = ax_main.hist2d(
+        hue.flatten() * 360,
+        value.flatten(),
+        bins=[angle_bins, value_bins],
+        cmap="viridis"
+    )
+
+    ax_main.set_xlabel("Angle (degrees)")
+    ax_main.set_ylabel("Magnitude")
+
+    ax_main.set_xticks(np.linspace(0, 360, len(angle_bins)))
+    ax_main.set_yticks(np.linspace(0, 1, 4))
+
+
+    # --- récupérer position de l'axe principal (en coordonnées de figure) ---
+    pos = ax_main.get_position()  # Bbox: x0, y0, x1, y1, width, height
+
+    # paramètres d'espacement réglables (affine selon goût)
+    pad_top = 0.01     # espace entre top du main et bottom du ax_x
+    pad_right = 0.01   # espace entre right du main et left du ax_y
+    top_height = 0.12  # hauteur de ax_x (en fraction de la figure)
+    right_width = 0.06 # largeur de ax_y (en fraction de la figure)
+    cb_height = 0.02   # hauteur de la colorbar
+    cb_gap = 0.10      # gap entre bottom du main et top de la colorbar
+
+    # --- créer ax_x aligné géométriquement avec ax_main ---
+    ax_x_rect = [pos.x0, pos.y1 + pad_top, pos.width, top_height]
+    ax_x = fig.add_axes(ax_x_rect, sharex=ax_main)
+    # tracer histogramme marginal X (peut avoir bins différents — c'est OK)
+    ax_x.hist(hue.flatten() * 360, bins=np.arange(0, 360.1, 1), color="#ff6600", alpha=0.33)
+    ax_x.axis("off")  # ou laisser ticks si souhaité
+
+    # --- créer ax_y aligné géométriquement avec ax_main ---
+    ax_y_rect = [pos.x1 + pad_right, pos.y0, right_width, pos.height]
+    ax_y = fig.add_axes(ax_y_rect, sharey=ax_main)
+    ax_y.hist(value.flatten(), bins=np.arange(0, 1.00001, 1/255.0),
+            orientation="horizontal", color="#0066ff", alpha=0.33)
+    ax_y.axis("off")
+
+    # verrouiller limites pour garder l'alignement visuel
+    ax_x.set_xlim(ax_main.get_xlim())
+    ax_y.set_ylim(ax_main.get_ylim())
+
+    # --- colorbar placée explicitement sous ax_main pour éviter chevauchement ---
+    cax_rect = [pos.x0, pos.y0 - cb_gap - cb_height, pos.width, cb_height]
+    cax = fig.add_axes(cax_rect)
+    cb = fig.colorbar(h2[3], cax=cax, orientation="horizontal")
+    cax.set_xlabel("Counts")
+
+    # esthétique
+    for ax in [ax_main, ax_x, ax_y]:
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+
+    # masquer labels doublons si besoin
+    plt.setp(ax_x.get_xticklabels(), visible=False)
+    plt.setp(ax_y.get_yticklabels(), visible=False)
+
+    plt.show()"""
     
     # Convert HSV to RGB
     rgb_map = hsv_to_rgb(hsv_map)
@@ -138,7 +277,7 @@ _ACCEL_THRESHOLD = 512
 # ----------------- GUI class -----------------
 class FFTFilterGUI(tk.Tk):
     def __init__(self):
-        print("starting app\n")
+
         super().__init__()
         self.title('FFT Directional Filters POC - Ellipse HSV')
         self.geometry('1600x900')
@@ -346,25 +485,27 @@ class FFTFilterGUI(tk.Tk):
             return
         
         width, height =  self.fft_log.shape
+        pixel_count = width * height
         self.ax_fft.clear()
         self.ax_fft.imshow(self.fft_log, origin='upper', cmap='magma')
         self.ax_fft.set_title('FFT log magnitude')
         self.ax_fft.axis('off')
 
         self.ax_profile_fft.clear()
-        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / self.radii[1:]), self.profile[1:], lw= 2,  alpha= 0.5)
+        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / self.radii[2:]), self.profile[2:] / pixel_count, lw= 2,  alpha= 0.5)
         self.ax_profile_fft.set_title('FFT Radial profile')
 
-        x = np.arange(start = 1, stop = len(self.gmm_info['modeled']))
-        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), self.gmm_info['modeled'][1:], label=f'GMM mixture', lw= 2, alpha = 0.5)
+        x = np.arange(start = 2, stop = len(self.gmm_info['modeled'])  + 2)
+
+        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), self.gmm_info['modeled'] / pixel_count, label=f'GMM mixture', lw= 2, alpha = 0.5)
 
         for num, c in enumerate(self.gmm_info['components']):
-            self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), c['pdf'][1:], lw= 1, linestyle='--', alpha= 0.5, label = f"composante {num}")
+            self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), c['pdf'] / pixel_count, lw= 1, linestyle='--', alpha= 0.5, label = f"composante {num}")
         
         # marques des centres sélectionnés
         for (r, v) in self.gmm_info['selected']:
             self.ax_profile_fft.axvline(np.log2(np.min([width, height]) / r), color='k', linestyle=':', alpha=0.6)
-            self.ax_profile_fft.scatter([np.log2(np.min([width, height]) / r)], [v], c='k')
+            self.ax_profile_fft.scatter([np.log2(np.min([width, height]) / r)], [v / pixel_count], c='k')
 
         for i,p in enumerate(self.peaks_info, start=1):
             c = p.get('c', None)
@@ -373,20 +514,42 @@ class FFTFilterGUI(tk.Tk):
                 continue
             self.ax_fft.scatter([c], [r], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
             radius = int(np.sqrt((c - height / 2)**2 + (r - width / 2)**2))
-            self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
+            self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius] / pixel_count, marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
             if highlight_idx is not None and i-1 == highlight_idx:
                 self.ax_fft.scatter([c], [r], marker='x', color='cyan', s=50)
                 radius = int(np.sqrt((c - height / 2)**2 + (r - width / 2)**2))
-                self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius], color = "cyan", marker = 'x', s=50)
+                self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius] / pixel_count, color = "cyan", marker = 'x', s=50)
 
                 self.ax_profile_grad.clear()
                 angles, magnitudes = direction_profile(self.fft_mag, distance= radius)
                 self.ax_profile_grad.plot(angles[0:int(len(angles)/2)], magnitudes[0:int(len(angles)/2)], color="#33ff33", lw= 2,  alpha= 0.5)
-                self.ax_profile_grad.set_title(f"FFT Angle Profile {radius}px")
+                self.ax_profile_grad.set_title(f"FFT Angle Profile {np.min([width, height]) / float(radius)}px")
 
                 self.canvas_profile_grad.draw()
 
         self.canvas_profile_fft.draw()
+
+        """old_fig = self.canvas_profile_fft.figure
+        old_ax = old_fig.axes[0]
+
+        new_fig, new_ax = plt.subplots(figsize=(6, 3))
+
+        colors = ["#ff6600", "#9900ff", "#0099ff", "#000000", "#000000"]
+        alphas = [1.0, 0.5, 0.5, 0.7, 0.7]
+        labels = ['original', 'modeled',  'component 1', 'component 2', 'selected 1', 'selected 2']
+        linestyles = ['solid', 'dashed', 'dashed', 'dotted', 'dotted']
+        for n, line in enumerate(old_ax.get_lines()):
+            if n > 0:
+                new_ax.plot(line.get_xdata(), line.get_ydata(), color=colors[n-1] , alpha= alphas[n-1], label = labels[n], linestyle = linestyles[n-1])
+            else:
+                new_ax.plot(line.get_xdata(), line.get_ydata(), label = labels[n])
+
+        new_ax.set_xlabel("Logarithmic Scale")
+        new_ax.set_ylabel("Normalized magnitude")
+
+        plt.legend()
+        plt.show()"""
+
         self.canvas_fft.draw()
 
     def _on_select_filter(self, evt):
@@ -640,7 +803,7 @@ class FFTFilterGUI(tk.Tk):
             for (r_pix, val) in sel:
                 if r_pix == 0:
                     continue
-                f = float(r_pix) / diag
+                f = float(r_pix) / np.min([nx, ny])
                 if f == 0:
                     continue
                 wavelength = 1.0 / f
@@ -696,7 +859,7 @@ class FFTFilterGUI(tk.Tk):
         for p in peaks_info:
             sigma = p['sigma'] if 'sigma' in p else p.get('sigma', 1.0)
             angle = p.get('angle', 0.0)
-            kernel_np = directional_gaussian_derivative_kernel(sigma, angle, truncate=3.0)
+            kernel_np = directional_gaussian_derivative_kernel(sigma, angle, truncate=math.pi)
             kernels.append(kernel_np)
             if is_gpu:
                 import cupy as cp

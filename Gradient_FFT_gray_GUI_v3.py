@@ -741,7 +741,7 @@ class FFTFilterGUI(tk.Tk):
             ny, nx = mag_full_cpu.shape
             cy, cx = ny//2, nx//2
             max_r = min(cy, cx, ny-cy-1, nx-cx-1)
-            radii, profile, counts = radial_distance_profile(mag_full_cpu, center=(cy,cx), max_radius=max_r)
+            radii, profile, counts, sym_radii, sym_Decibels = radial_distance_profile(mag_full_cpu, center=(cy,cx), max_radius=max_r)
 
             try:
                 adaptive_k = adaptive_k  # deja définie
@@ -756,7 +756,7 @@ class FFTFilterGUI(tk.Tk):
             min_r = max(1, 2)
             # tenter GMM
             min_dist_r = max(1, self.min_distance_var.get() // max(1, down_factor))
-            sel_gmm, comps, modeled, k_best, f_vals, Ks = select_peaks_with_gmm_and_components(profile[min_r:], max_peaks= self.max_gmm.get(), min_distance=min_dist_r)
+            sel_gmm, comps, modeled, k_best, f_vals, Ks = select_peaks_with_gmm_and_components(x= sym_radii, profile= sym_Decibels, max_peaks= self.max_gmm.get())
             # note : on a passé profile[min_r:] ; il faut ajuster les indices retournés
             if sel_gmm is None:
                 # fallback heuristique original si GMM a échoué
@@ -792,7 +792,7 @@ class FFTFilterGUI(tk.Tk):
                                 break
                         if not too_close:
                             sel.append((r, val))
-                        if len(sel) >= self.max_gmm:
+                        if len(sel) >= self.max_gmm.get():
                             break
 
 
@@ -925,7 +925,7 @@ class FFTFilterGUI(tk.Tk):
             'fft_log': self.fft_log,
             'hsv_map': hsv_map,
             'hsv_maps': hsv_maps,
-            'fft_profile': (radii, profile),
+            'fft_profile': (sym_radii, sym_Decibels),
             'GMM info': {
                 'selected': sel,
                 'components': comps, 

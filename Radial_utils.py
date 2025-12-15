@@ -35,26 +35,33 @@ def radial_distance_profile(mag, center=None, max_radius=None):
                 
     mean_profile = np.zeros_like(sums)
     valid = counts > 0
-    mean_profile[valid] = sums[valid] # / counts[valid]
+    mean_profile[valid] = (sums[valid] / counts[valid]) / (nx * ny)
+    P = np.mean(mean_profile)
+    Db_profile = 10 * np.log10(mean_profile / P)
     radii = np.arange(len(mean_profile))
 
-    """# Création d'une figure et d'un axe
+    sym_radii = np.concatenate([-radii[::-1], radii[1:]])  # [-N+1, ..., -1, 0, 1, ..., N-1]
+
+    # Symétrisation du Db_profile
+    sym_Db_profile = np.concatenate([Db_profile[::-1], Db_profile[1:]])
+
+    # Création d'une figure et d'un axe
     fig, ax = plt.subplots(figsize=(6, 3))
 
     # Tracer sur l'axe
-    ax.plot(radii, mean_profile / (ny * nx), lw=1.0)
+    ax.plot(sym_radii, sym_Db_profile, lw=1.0)
 
     # Nom des axes
-    ax.set_xlabel("Frequency")
-    ax.set_ylabel("Normalized magnitude")
+    ax.set_xlabel(r"Frequency ($px^{-1}$)")
+    ax.set_ylabel(r"Magnitude (dB)")
 
     # Affichage de la figure
     plt.show()
 
     # Si besoin, fermer explicitement la figure
-    plt.close(fig)"""
+    plt.close(fig)
 
-    return radii, mean_profile, counts
+    return radii, mean_profile, counts, sym_radii, Db_profile
 
 def angle_profile(mag, angle, center=None, radial_resolution=1.0, angular_tolerance=1.0):
     """
@@ -322,9 +329,7 @@ def _component_variances_from_gm(gm, covariance_type):
     covs = np.maximum(covs, 1e-12)
     return covs
 
-def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, max_k=None,
-                                         covariance_type='full', random_state=0, rng_seed=None,
-                                         freq_priority=0.0, freq_cutoff=0.1, freq_exponent=2.0):
+def select_peaks_with_gmm_and_components(x, profile, max_peaks=4, max_k=None, covariance_type='full', random_state=0, rng_seed=None):
     """
     Détecte pics et renvoie :
       sel         : liste de (r_index, profile[r_index]) (au plus max_peaks) - sélection finale par min_distance
@@ -355,24 +360,6 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
     if N == 0:
         return [], [], np.zeros(0), 0, [], []
 
-    # --- sécurité paramètres fréquence ---
-    try:
-        freq_cutoff = float(freq_cutoff)
-    except Exception:
-        freq_cutoff = 0.1
-    if freq_cutoff <= 0.0 or freq_cutoff > 0.5:
-        freq_cutoff = 0.1
-    try:
-        freq_priority = float(freq_priority)
-    except Exception:
-        freq_priority = 0.0
-    try:
-        freq_exponent = float(freq_exponent)
-    except Exception:
-        freq_exponent = 2.0
-    if freq_exponent <= 0.0:
-        freq_exponent = 2.0
-
     # poids non négatifs pour le fit
     prof_min = profile.min()
     if prof_min < 0:
@@ -385,21 +372,6 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
     if max_k is None:
         max_k = min(max_peaks, max(1, N // 2, 6))
     max_k = max(1, int(max_k))
-
-    x = np.arange(start = min_distance, stop = N + min_distance).reshape(-1, 1)
-
-    # Préparer grille fréquentielle (pour rfft)
-    freqs = np.fft.rfftfreq(N, d=1.0)  # shape M = N//2 + 1
-
-    # construire poids fréquentiels (prioriser basses fréquences) :
-    if freq_priority == 0.0:
-        weight_freq = np.ones_like(freqs)
-    else:
-        denom = 1.0 + (freqs / freq_cutoff) ** freq_exponent
-        weight_freq = 1.0 + float(freq_priority) * (1.0 / denom)
-    sum_weight_freq = float(np.sum(weight_freq))
-    if sum_weight_freq <= 0:
-        sum_weight_freq = 1.0
 
     # calculer f(k) pour k=1..max_k
     f_vals = []
@@ -418,24 +390,11 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
             else:
                 modeled_k = (sum_profile / sum_pdf) * pdf
 
-            # si on ne priorise pas les basses fréquences, on conserve dist_Jeffreys d'origine
-            if freq_priority == 0.0:
-                f_k = dist_Jeffreys(profile, modeled_k)
-                # print(f"{k} : {f_k}\n")
-                if not np.isfinite(f_k):
-                    f_k = 1e12
-            else:
-                # distance spectrale pondérée entre profile et modeled_k
-                Pf = np.fft.rfft(profile)
-                Mf = np.fft.rfft(modeled_k)
-                magP = np.abs(Pf)
-                magM = np.abs(Mf)
-                diff2 = (magP - magM) ** 2
-                weighted_diff = weight_freq * diff2
-                spectral_dist = float(np.sum(weighted_diff) / sum_weight_freq)
-                f_k = spectral_dist
-                if not np.isfinite(f_k):
-                    f_k = 1e12
+           
+            f_k = dist_Jeffreys(profile, modeled_k)
+            # print(f"{k} : {f_k}\n")
+            if not np.isfinite(f_k):
+                f_k = 1e12
 
         except Exception:
             f_k = 1e12
@@ -498,13 +457,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
     for c in comps_sorted:
         r = c['center_idx']
         val = float(c['pdf'][r])
-        too_close = False
-        for (sr, sval) in sel:
-            if abs(sr - r) <= max(1, min_distance):
-                too_close = True
-                break
-        if not too_close:
-            sel.append((r, val))
+        sel.append((r, val))
         if len(sel) >= max_peaks:
             break
 
@@ -555,7 +508,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
 
         # si amplitude trop faible (?) — on peut garder car threshold l'a filtrée
         # vérifier min_distance vs sélection actuelle
-        if not respects_min_distance(r, sel, min_distance):
+        if not respects_min_distance(r, sel, 10):
             # si sel plein et le dirac est plus grand que le plus petit élément, essayer de remplacer
             if len(sel) >= max_peaks:
                 min_idx = None
@@ -566,7 +519,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
                         min_idx = i
                 if min_idx is not None and dirac_amp > min_val:
                     temp_sel = sel[:min_idx] + sel[min_idx+1:]
-                    if respects_min_distance(r, temp_sel, min_distance):
+                    if respects_min_distance(r, temp_sel, 10):
                         sel[min_idx] = (r, float(dirac_amp))
                     else:
                         continue
@@ -586,7 +539,7 @@ def select_peaks_with_gmm_and_components(profile, max_peaks=4, min_distance=1, m
                         min_idx = i
                 if min_idx is not None and dirac_amp > min_val:
                     temp_sel = sel[:min_idx] + sel[min_idx+1:]
-                    if respects_min_distance(r, temp_sel, min_distance):
+                    if respects_min_distance(r, temp_sel, 10):
                         sel[min_idx] = (r, float(dirac_amp))
                     else:
                         continue

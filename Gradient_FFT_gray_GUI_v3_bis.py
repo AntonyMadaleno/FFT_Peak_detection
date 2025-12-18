@@ -397,7 +397,7 @@ class FFTFilterGUI(tk.Tk):
         self.canvas_profile_grad.get_tk_widget().pack(fill='both', expand=True)
 
     def _on_load_image(self):
-        path = filedialog.askopenfilename(filetypes=[('Images','*.ppm;*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp;*.gif'), ('All','*.*')])
+        path = filedialog.askopenfilename(filetypes=[('Images','*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp;*.gif'), ('All','*.*')])
         if not path:
             return
         arr = plt.imread(path)
@@ -492,36 +492,20 @@ class FFTFilterGUI(tk.Tk):
         self.ax_fft.axis('off')
 
         self.ax_profile_fft.clear()
-
-        # Create mask to exclude zero frequency
-        mask = self.radii != 0
-
-        # Filter both arrays
-        frq_filtered = self.radii[mask]
-        mag_filtered = self.profile[mask]
-
-        # Get sorting indices
-        scale = 1 / frq_filtered
-        sort_idx = np.argsort(scale)
-
-        # Reorder both arrays
-        scale_sorted = scale[sort_idx]
-        mag_sorted = mag_filtered[sort_idx]
-
-        self.ax_profile_fft.plot(scale_sorted, mag_sorted, lw= 2,  alpha= 0.5)
+        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / self.radii[2:]), self.profile[2:] / pixel_count, lw= 2,  alpha= 0.5)
         self.ax_profile_fft.set_title('FFT Radial profile')
 
-        model = self.gmm_info['modeled'][sort_idx]
-        self.ax_profile_fft.plot(scale_sorted, model, label=f'GMM mixture', lw= 2, alpha = 0.5)
+        x = np.arange(start = 2, stop = len(self.gmm_info['modeled'])  + 2)
+
+        self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), self.gmm_info['modeled'] / pixel_count, label=f'GMM mixture', lw= 2, alpha = 0.5)
 
         for num, c in enumerate(self.gmm_info['components']):
-            composante = c['pdf'][sort_idx]
-            self.ax_profile_fft.plot(scale_sorted, composante, lw= 1, linestyle='--', alpha= 0.5, label = f"composante {num}")
+            self.ax_profile_fft.plot(np.log2(np.min([width, height]) / x), c['pdf'] / pixel_count, lw= 1, linestyle='--', alpha= 0.5, label = f"composante {num}")
         
         # marques des centres sélectionnés
         for (r, v) in self.gmm_info['selected']:
-            self.ax_profile_fft.axvline(1 / r, color='k', linestyle=':', alpha=0.6)
-            self.ax_profile_fft.scatter([1 / r], [v], c='k')
+            self.ax_profile_fft.axvline(np.log2(np.min([width, height]) / r), color='k', linestyle=':', alpha=0.6)
+            self.ax_profile_fft.scatter([np.log2(np.min([width, height]) / r)], [v / pixel_count], c='k')
 
         for i,p in enumerate(self.peaks_info, start=1):
             c = p.get('c', None)
@@ -530,11 +514,11 @@ class FFTFilterGUI(tk.Tk):
                 continue
             self.ax_fft.scatter([c], [r], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
             radius = int(np.sqrt((c - height / 2)**2 + (r - width / 2)**2))
-            self.ax_profile_fft.scatter(1 / float(radius), self.profile[radius], marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
+            self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius] / pixel_count, marker='o', edgecolors='red', facecolors='none', s=20, linewidths=2)
             if highlight_idx is not None and i-1 == highlight_idx:
                 self.ax_fft.scatter([c], [r], marker='x', color='cyan', s=50)
                 radius = int(np.sqrt((c - height / 2)**2 + (r - width / 2)**2))
-                self.ax_profile_fft.scatter(1 / float(radius), self.profile[radius], color = "cyan", marker = 'x', s=50)
+                self.ax_profile_fft.scatter(np.log2(np.min([width, height]) / float(radius)), self.profile[radius] / pixel_count, color = "cyan", marker = 'x', s=50)
 
                 self.ax_profile_grad.clear()
                 angles, magnitudes = direction_profile(self.fft_mag, distance= radius)
@@ -757,23 +741,7 @@ class FFTFilterGUI(tk.Tk):
             ny, nx = mag_full_cpu.shape
             cy, cx = ny//2, nx//2
             max_r = min(cy, cx, ny-cy-1, nx-cx-1)
-            radii, profile, counts, sym_radii, sym_Decibels = radial_distance_profile(mag_full_cpu, center=(cy,cx), max_radius=max_r)
-
-            # Création d'une figure pour montrer le profile
-            fig, ax = plt.subplots(figsize=(6, 3))
-
-            # Tracer sur l'axe
-            ax.plot(radii[1:], profile[1:], lw=1.0)
-
-            # Nom des axes
-            ax.set_xlabel(r"Frequency ($px^{-1}$)")
-            ax.set_ylabel(r"Magnitude (dB)")
-
-            # Affichage de la figure
-            plt.show()
-
-            # Si besoin, fermer explicitement la figure
-            plt.close(fig)
+            radii, profile, counts = radial_distance_profile(mag_full_cpu, center=(cy,cx), max_radius=max_r)
 
             try:
                 adaptive_k = adaptive_k  # deja définie
@@ -788,66 +756,9 @@ class FFTFilterGUI(tk.Tk):
             min_r = max(1, 2)
             # tenter GMM
             min_dist_r = max(1, self.min_distance_var.get() // max(1, down_factor))
-
-            mask = sym_radii  != 0
-            frq_filtered = sym_radii[mask]
-            dB_filtered = sym_Decibels[mask]
-
-            ################################################################
-
-            # Création d'une figure pour montrer le profile symétriser
-            fig, ax = plt.subplots(figsize=(6, 3))
-
-            # Tracer sur l'axe
-            ax.plot(frq_filtered, dB_filtered, lw=1.0)
-
-            # Nom des axes
-            ax.set_xlabel(r"Frequency ($px^{-1}$)")
-            ax.set_ylabel(r"Magnitude (dB)")
-
-            # Affichage de la figure
-            plt.show()
-
-            # Si besoin, fermer explicitement la figure
-            plt.close(fig)
-
-            # Reorder both arrays
-            scale = 1 / frq_filtered
-
-            # Get sorting indices
-            sort_idx = np.argsort(scale)
-
-            scale_sorted = scale[sort_idx]
-            dB_sorted = dB_filtered[sort_idx]
-
-            ################################################################
-
-            # Création d'une figure pour montrer le profile symétriser
-            fig, ax = plt.subplots(figsize=(6, 3))
-
-            # Tracer sur l'axe
-            ax.plot(scale_sorted, dB_sorted, lw=1.0)
-
-            # Nom des axes
-            ax.set_xlabel(r"Relative scale")
-            ax.set_ylabel(r"Magnitude (dB)")
-
-            # Affichage de la figure
-            plt.show()
-
-            # Si besoin, fermer explicitement la figure
-            plt.close(fig)
-
-            scale_inverted = (1 - np.abs(scale_sorted)) * np.sign(scale_sorted)
-            sort_idx = np.argsort(scale_inverted)
-
-            scale_shifted = scale_inverted[sort_idx]
-            dB_shifted = dB_sorted[sort_idx]
-
-            sel_gmm, comps, modeled, k_best, f_vals, Ks = select_peaks_with_gmm_and_components(x= scale_shifted, profile= dB_shifted, max_peaks= self.max_gmm.get())
-
+            sel_gmm, comps, modeled, k_best, f_vals, Ks = select_peaks_with_gmm_and_components(profile[min_r:], max_peaks= self.max_gmm.get(), min_distance=min_dist_r)
+            # note : on a passé profile[min_r:] ; il faut ajuster les indices retournés
             if sel_gmm is None:
-                print("fallback heuristique original car GMM a échoué !")
                 # fallback heuristique original si GMM a échoué
                 candidates = [(r, float(profile[r])) for r in range(min_r, len(profile))]
                 candidates.sort(key=lambda x: x[1], reverse=True)
@@ -862,20 +773,13 @@ class FFTFilterGUI(tk.Tk):
                             break
                     if not too_close:
                         sel.append((r, val))
-                    if len(sel) >= self.max_gmm.get():
+                    if len(sel) >= 4:
                         break
             else:
                 # réajuster indices (car on a passé profile[min_r:])
-                sel = []
-                for (r, v) in sel_gmm:
-                    hsize = np.min([nx, ny]) / 2
-                    if (r > hsize):
-                        rad = int(r -  hsize)
-                        sel.append((rad, v))
-
+                sel = [(r + min_r, v) for (r, v) in sel_gmm]
                 # si aucun trouvé ou valeurs en dessous du threshold -> retomber sur heuristique (optionnel)
                 if not sel:
-                    print("fallback heuristique conservateur")
                     # fallback heuristique conservateur
                     candidates = [(r, float(profile[r])) for r in range(min_r, len(profile))]
                     candidates.sort(key=lambda x: x[1], reverse=True)
@@ -888,15 +792,14 @@ class FFTFilterGUI(tk.Tk):
                                 break
                         if not too_close:
                             sel.append((r, val))
-                            print(f"r = {r} et val = {val}")
-                        if len(sel) >= self.max_gmm.get():
+                        if len(sel) >= self.max_gmm:
                             break
+
 
             toc('radial_profile')
 
             tic('map_radial')
             diag = math.hypot(nx, ny)
-
             for (r_pix, val) in sel:
                 if r_pix == 0:
                     continue
@@ -905,7 +808,7 @@ class FFTFilterGUI(tk.Tk):
                     continue
                 wavelength = 1.0 / f
                 sigma = wavelength / (2.0 * math.pi)
-                meanI = float(sym_Decibels[r_pix-1])
+                meanI = float(profile[r_pix])
                 # Generate two filters: 0° and 90°
                 c0 = int(min(nx-1, cx + r_pix))
                 r0 = int(cy)
@@ -1022,7 +925,7 @@ class FFTFilterGUI(tk.Tk):
             'fft_log': self.fft_log,
             'hsv_map': hsv_map,
             'hsv_maps': hsv_maps,
-            'fft_profile': (sym_radii, sym_Decibels),
+            'fft_profile': (radii, profile),
             'GMM info': {
                 'selected': sel,
                 'components': comps, 

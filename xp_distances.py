@@ -396,6 +396,8 @@ def Additive_symmetric_chi(P, Q):
 def _dist_KL(P, Q, xp):
     Qe = xp.where(Q == 0, epsilon, Q)
     Pe = xp.where(P == 0, epsilon, P)
+    Qe = Qe / xp.sum(Qe)
+    Pe = Pe / xp.sum(Pe)
     return xp.sum(P * xp.log(Pe / Qe), axis=1)
 
 def dist_KL(P, Q):

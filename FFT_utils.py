@@ -60,7 +60,7 @@ def mirror_coord(coord, shape):
 
 
 def directional_gaussian_derivative_kernel(sigma, angle_rad, truncate=3.0):
-    if sigma <= 0:
+    if sigma <= 0.5:
         sigma = 0.5
     radius = int(truncate * sigma)
     ys = np.arange(-radius, radius+1)

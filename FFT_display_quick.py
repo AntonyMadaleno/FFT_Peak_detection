@@ -46,7 +46,7 @@ def main():
     root.withdraw()  # cacher la fenêtre principale
 
     # Ouvrir fichier image
-    filetypes = [("Images", ("*.png","*.jpg","*.jpeg","*.tif","*.tiff","*.bmp")), ("All files", "*.*")]
+    filetypes = [("Images", ("*.ppm","*.png","*.jpg","*.jpeg","*.tif","*.tiff","*.bmp")), ("All files", "*.*")]
     img_path = filedialog.askopenfilename(title="Choisir une image", filetypes=filetypes)
     if not img_path:
         messagebox.showinfo("Annulé", "Aucun fichier sélectionné. Fin.")
